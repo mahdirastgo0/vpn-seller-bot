@@ -4,29 +4,62 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database.models import Order, OrderStatus, Plan, PaymentMethod, User, VpnConfig
+from app.database.models import (
+    Order,
+    OrderStatus,
+    Plan,
+    PaymentMethod,
+    User,
+    VpnConfig,
+)
 
 
-async def get_or_create_user(session: AsyncSession, telegram_id: int, username: str | None, full_name: str | None) -> User:
-    result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+async def get_or_create_user(
+    session: AsyncSession,
+    telegram_id: int,
+    username: str | None,
+    full_name: str | None,
+) -> User:
+    result = await session.execute(
+        select(User).where(User.telegram_id == telegram_id)
+    )
+
     user = result.scalar_one_or_none()
+
     if user is None:
-        user = User(telegram_id=telegram_id, username=username, full_name=full_name)
+        user = User(
+            telegram_id=telegram_id,
+            username=username,
+            full_name=full_name,
+        )
+
         session.add(user)
         await session.commit()
         await session.refresh(user)
+
     return user
 
 
-async def list_active_plans(session: AsyncSession, panel_key: str | None = None) -> list[Plan]:
+async def list_active_plans(
+    session: AsyncSession,
+    panel_key: str | None = None,
+) -> list[Plan]:
     query = select(Plan).where(Plan.is_active.is_(True))
+
     if panel_key:
         query = query.where(Plan.panel_key == panel_key)
-    result = await session.execute(query.order_by(Plan.price))
+
+    result = await session.execute(
+        query.order_by(Plan.price)
+    )
+
     return list(result.scalars().all())
 
 
-async def get_plan(session: AsyncSession, plan_id: int) -> Plan | None:
+async def get_plan(
+    session: AsyncSession,
+    plan_id: int,
+) -> Plan | None:
     return await session.get(Plan, plan_id)
 
 
@@ -43,39 +76,66 @@ async def create_order(
         payment_method=payment_method,
         status=OrderStatus.PENDING,
     )
+
     session.add(order)
+
     await session.commit()
     await session.refresh(order)
+
     return order
 
 
-async def get_order(session: AsyncSession, order_id: int) -> Order | None:
+async def get_order(
+    session: AsyncSession,
+    order_id: int,
+) -> Order | None:
     result = await session.execute(
         select(Order)
-        .options(selectinload(Order.user), selectinload(Order.plan))
+        .options(
+            selectinload(Order.user),
+            selectinload(Order.plan),
+        )
         .where(Order.id == order_id)
     )
+
     return result.scalar_one_or_none()
 
 
-async def get_order_by_authority(session: AsyncSession, authority: str) -> Order | None:
+async def get_order_by_authority(
+    session: AsyncSession,
+    authority: str,
+) -> Order | None:
     result = await session.execute(
         select(Order)
-        .options(selectinload(Order.user), selectinload(Order.plan))
+        .options(
+            selectinload(Order.user),
+            selectinload(Order.plan),
+        )
         .where(Order.zarinpal_authority == authority)
     )
+
     return result.scalar_one_or_none()
 
 
-async def mark_order_paid(session: AsyncSession, order: Order, admin_id: int | None = None) -> None:
+async def mark_order_paid(
+    session: AsyncSession,
+    order: Order,
+    admin_id: int | None = None,
+) -> None:
     order.status = OrderStatus.PAID
     order.reviewed_by_admin_id = admin_id
+
     await session.commit()
 
 
-async def mark_order_rejected(session: AsyncSession, order: Order, admin_id: int | None = None) -> None:
+async def mark_order_rejected(
+    session: AsyncSession,
+    order: Order,
+    admin_id: int | None = None,
+) -> None:
     order.status = OrderStatus.REJECTED
     order.reviewed_by_admin_id = admin_id
+
     await session.commit()
 
 
@@ -99,28 +159,79 @@ async def save_vpn_config(
         client_uuid=client_uuid,
         config_link=config_link,
         traffic_gb=traffic_gb,
-        expire_at=datetime.utcnow() + timedelta(days=duration_days),
+        expire_at=datetime.utcnow()
+        + timedelta(days=duration_days),
     )
+
     session.add(cfg)
+
     await session.commit()
     await session.refresh(cfg)
+
     return cfg
 
 
-async def list_user_configs(session: AsyncSession, user_id: int) -> list[VpnConfig]:
+async def list_user_configs(
+    session: AsyncSession,
+    user_id: int,
+) -> list[VpnConfig]:
     result = await session.execute(
-        select(VpnConfig).where(VpnConfig.user_id == user_id).order_by(VpnConfig.created_at.desc())
+        select(VpnConfig)
+        .where(VpnConfig.user_id == user_id)
+        .order_by(VpnConfig.created_at.desc())
     )
+
     return list(result.scalars().all())
 
 
-async def list_pending_orders(session: AsyncSession, method: PaymentMethod | None = None) -> list[Order]:
+async def get_user_config(
+    session: AsyncSession,
+    config_id: int,
+    user_id: int,
+) -> VpnConfig | None:
+    result = await session.execute(
+        select(VpnConfig).where(
+            VpnConfig.id == config_id,
+            VpnConfig.user_id == user_id,
+        )
+    )
+
+    return result.scalar_one_or_none()
+
+
+async def update_vpn_config_link(
+    session: AsyncSession,
+    config: VpnConfig,
+    config_link: str,
+) -> VpnConfig:
+    config.config_link = config_link
+
+    await session.commit()
+    await session.refresh(config)
+
+    return config
+
+
+async def list_pending_orders(
+    session: AsyncSession,
+    method: PaymentMethod | None = None,
+) -> list[Order]:
     query = (
         select(Order)
-        .options(selectinload(Order.user), selectinload(Order.plan))
+        .options(
+            selectinload(Order.user),
+            selectinload(Order.plan),
+        )
         .where(Order.status == OrderStatus.PENDING)
     )
+
     if method:
-        query = query.where(Order.payment_method == method)
-    result = await session.execute(query.order_by(Order.created_at))
+        query = query.where(
+            Order.payment_method == method
+        )
+
+    result = await session.execute(
+        query.order_by(Order.created_at)
+    )
+
     return list(result.scalars().all())
