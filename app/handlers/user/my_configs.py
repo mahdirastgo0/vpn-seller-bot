@@ -228,6 +228,7 @@ async def build_configs_message(
             traffic=total,
             expire_date=expire_text,
             status=config_status(cfg),
+            link=cfg.config_link,
         )
 
         text += "\n\n"
@@ -296,6 +297,7 @@ async def my_configs(
             traffic=total,
             expire_date=cfg.expire_at.strftime("%Y/%m/%d"),
             status=config_status(cfg),
+            link=cfg.config_link,
         )
 
         await message.answer(
@@ -497,6 +499,7 @@ async def config_refresh(
                 "%Y/%m/%d"
             ),
             status=config_status(cfg),
+            link=data["link"],
         )
 
         await callback.message.edit_text(
