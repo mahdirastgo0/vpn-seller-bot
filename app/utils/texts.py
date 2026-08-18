@@ -1,3 +1,4 @@
+from pathlib import Path
 WELCOME = (
     "👋 سلام {name} عزیز، به ربات فروش کانفیگ VPN خوش اومدی!\n\n"
     "از منوی زیر می‌تونی یه سرویس بخری، کانفیگ‌های فعالت رو ببینی یا با پشتیبانی در ارتباط باشی."
@@ -63,10 +64,40 @@ ADMIN_NEW_CRYPTO_ORDER = (
 NOT_ADMIN = "⛔️ این دستور فقط برای ادمین‌هاست."
 NO_PENDING_ORDERS = "در حال حاضر سفارش در انتظاری وجود نداره."
 
-MY_CONFIGS_EMPTY = "هنوز هیچ کانفیگ فعالی نداری. از منوی «خرید سرویس» شروع کن 🛒"
-MY_CONFIGS_ITEM = (
-    "🔹 {panel_name} | {traffic} گیگ | انقضا: {expire_date}\n"
-    "`{link}`\n"
+MY_CONFIGS_EMPTY = p = Path("~/vpn-seller-bot/app/utils/texts.py").expanduser()
+text = p.read_text()
+
+text = text.replace(
+    'MY_CONFIGS_EMPTY = "هنوز هیچ کانفیگ فعالی نداری. از منوی «خرید سرویس» شروع کن 🛒"',
+    'MY_CONFIGS_EMPTY = "📂 <b>کانفیگ‌های من</b>\\n\\nهنوز هیچ سرویس فعالی نداری.\\n\\n🛒 از منوی «خرید سرویس» می‌تونی اولین سرویس خودت رو تهیه کنی."'
 )
+
+p.write_text(text)
+print("✅ empty config text updated")
+
+p = Path("~/vpn-seller-bot/app/utils/texts.py").expanduser()
+text = p.read_text()
+
+old = '''MY_CONFIGS_ITEM = (
+    "🔹 {panel_name} | {traffic} گیگ | انقضا: {expire_date}\\n"
+    "`{link}`\\n"
+)
+'''
+
+new = '''MY_CONFIGS_ITEM = (
+    "📡 <b>سرویس VPN</b>\\n"
+    "━━━━━━━━━━━━━━━━━━\\n"
+    "🌍 <b>لوکیشن:</b> {panel_name}\\n"
+    "📊 <b>حجم:</b> {traffic} GB\\n"
+    "📅 <b>انقضا:</b> {expire_date}\\n"
+    "━━━━━━━━━━━━━━━━━━"
+)
+'''
+
+if old in text:
+    text = text.replace(old, new)
+
+p.write_text(text)
+print("✅ texts.py updated")
 
 SUPPORT_TEXT = "برای ارتباط با پشتیبانی به آیدی زیر پیام بده:\n{support}"

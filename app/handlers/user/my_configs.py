@@ -1,243 +1,75 @@
-import asyncio
-from urllib.parse import quote
-
-import httpx
+from datetime import datetime, timezone
 
 from aiogram import F, Router
-from aiogram.types import (
-    BufferedInputFile,
-    CallbackQuery,
-    Message,
-)
+from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.database.crud import (
-    get_or_create_user,
-    list_user_configs,
-    get_user_config,
-    update_vpn_config_link,
-)
-from app.services.sanaei_client import build_config_link
+from app.database.crud import get_or_create_user, list_user_configs
 from app.utils import texts
-from app.utils.qrcode_gen import generate_qr_bytes
-from app.keyboards.user_kb import (
-    config_kb,
-    configs_global_kb,
-)
 
 router = Router(name="my_configs")
 
 
-def bytes_to_gb(value: int | float | None) -> float:
-    if not value:
-        return 0.0
+def format_expire_date(dt: datetime) -> str:
+    if not dt:
+        return "نامشخص"
 
-    return value / (1024 ** 3)
-
-
-async def fetch_inbound(panel, inbound_id: int) -> dict | None:
-    url = (
-        panel.url
-        + "/panel/api/inbounds/list"
-    )
-
-    async with httpx.AsyncClient(
-        verify=False,
-        timeout=20,
-    ) as client:
-
-        response = await client.get(
-            url,
-            headers={
-                "Authorization": f"Bearer {panel.api_token}",
-            },
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-    if not data.get("success"):
-        return None
-
-    for inbound in data.get("obj", []):
-        if int(inbound.get("id", 0)) == int(inbound_id):
-            return inbound
-
-    return None
+    return dt.strftime("%Y/%m/%d")
 
 
-async def refresh_config_from_panel(config):
-    panel = settings.PANELS.get(config.panel_key)
-
-    if not panel:
-        raise RuntimeError("Panel not found")
-
-    inbound = await fetch_inbound(
-        panel,
-        config.inbound_id,
-    )
-
-    if not inbound:
-        raise RuntimeError("Inbound not found")
-
-    # پیدا کردن کلاینت فعلی
-    client_found = None
-
-    for client in inbound.get("settings", {}).get("clients", []):
-        if (
-            client.get("id") == config.client_uuid
-            or client.get("email") == config.client_email
-        ):
-            client_found = client
-            break
-
-    if client_found is None:
-        # بعضی نسخه‌های Sanaei اطلاعات را در clientStats دارند
-        for client in inbound.get("clientStats", []):
-            if (
-                client.get("id") == config.client_uuid
-                or client.get("email") == config.client_email
-            ):
-                client_found = client
-                break
-
-    if client_found is None:
-        raise RuntimeError("Client not found on panel")
-
-    # ساخت لینک جدید بر اساس تنظیمات فعلی inbound
-    new_link = build_config_link(
-        panel,
-        inbound,
-        config.client_uuid,
-        config.client_email,
-    )
-
-    # آمار مصرف
-    used_bytes = 0
-    total_bytes = config.traffic_gb * 1024 ** 3
-
-    # اول clientStats
-    for stat in inbound.get("clientStats", []):
-        if (
-            stat.get("id") == config.client_uuid
-            or stat.get("email") == config.client_email
-        ):
-            used_bytes = (
-                int(stat.get("up") or 0)
-                + int(stat.get("down") or 0)
-            )
-
-            if stat.get("total"):
-                total_bytes = int(stat.get("total"))
-
-            break
-
-    # سپس settings.clients اگر totalGB داشته باشد
-    if client_found:
-        total_gb = client_found.get("totalGB")
-
-        if total_gb is not None:
-            try:
-                total_bytes = int(total_gb)
-            except (ValueError, TypeError):
-                pass
-
-    return {
-        "inbound": inbound,
-        "link": new_link,
-        "used_gb": bytes_to_gb(used_bytes),
-        "total_gb": total_bytes / (1024 ** 3),
-    }
-
-
-def format_gb(value: float) -> str:
-    if value < 0.01:
-        return "0"
-
-    if value >= 100:
-        return f"{value:.0f}"
-
-    return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
-def config_status(config) -> str:
-    from datetime import datetime, timezone
+def config_status(expire_at: datetime) -> tuple[str, str]:
+    if not expire_at:
+        return "⚪️ نامشخص", "unknown"
 
     now = datetime.now(timezone.utc)
 
-    expire = config.expire_at
+    if expire_at.tzinfo is None:
+        expire_at = expire_at.replace(tzinfo=timezone.utc)
 
-    if expire.tzinfo is None:
-        expire = expire.replace(tzinfo=timezone.utc)
+    if expire_at <= now:
+        return "🔴 منقضی شده", "expired"
 
-    if expire <= now:
-        return "🔴 منقضی شده"
-
-    return "🟢 فعال"
+    return "🟢 فعال", "active"
 
 
-async def build_configs_message(
-    session: AsyncSession,
-    user_id: int,
-) -> str:
-    configs = await list_user_configs(
-        session,
-        user_id,
+def config_keyboard(config_id: int):
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔗 دریافت لینک",
+                    callback_data=f"config_link:{config_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 بروزرسانی",
+                    callback_data=f"config_refresh:{config_id}",
+                ),
+            ],
+        ]
     )
 
-    if not configs:
-        return texts.MY_CONFIGS_EMPTY
 
-    text = texts.MY_CONFIGS_HEADER
+def build_config_text(config, panel_name: str) -> str:
+    status, _ = config_status(config.expire_at)
 
-    for cfg in configs:
-        panel = settings.PANELS.get(cfg.panel_key)
-
-        panel_name = (
-            panel.name
-            if panel
-            else cfg.panel_key
-        )
-
-        used = "0"
-        total = str(cfg.traffic_gb)
-
-        try:
-            if panel:
-                data = await refresh_config_from_panel(cfg)
-
-                used = format_gb(data["used_gb"])
-                total = format_gb(data["total_gb"])
-
-        except Exception:
-            pass
-
-        expire = cfg.expire_at
-
-        if expire.tzinfo is not None:
-            expire_text = expire.strftime("%Y/%m/%d")
-        else:
-            expire_text = expire.strftime("%Y/%m/%d")
-
-        text += texts.MY_CONFIGS_ITEM.format(
-            panel_name=panel_name,
-            config_id=cfg.id,
-            used=used,
-            traffic=total,
-            expire_date=expire_text,
-            status=config_status(cfg),
-            link=cfg.config_link,
-        )
-
-        text += "\n\n"
-
-    return text
+    return (
+        f"📡 <b>سرویس VPN</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🆔 <b>سرویس #{config.id}</b>\n"
+        f"🌍 <b>لوکیشن:</b> {panel_name}\n"
+        f"📊 <b>حجم:</b> {config.traffic_gb} GB\n"
+        f"📅 <b>انقضا:</b> {format_expire_date(config.expire_at)}\n"
+        f"📌 <b>وضعیت:</b> {status}\n"
+        f"━━━━━━━━━━━━━━━━━━"
+    )
 
 
-@router.message(F.text == "📂 کانفیگ‌های من")
-async def my_configs(
+async def show_configs(
     message: Message,
     session: AsyncSession,
 ) -> None:
@@ -249,19 +81,20 @@ async def my_configs(
         full_name=message.from_user.full_name,
     )
 
-    configs = await list_user_configs(
-        session,
-        user.id,
-    )
+    configs = await list_user_configs(session, user.id)
 
     if not configs:
-        await message.answer(
-            texts.MY_CONFIGS_EMPTY,
-            parse_mode="HTML",
-        )
+        await message.answer(texts.MY_CONFIGS_EMPTY)
         return
 
+    await message.answer(
+        "📂 <b>کانفیگ‌های من</b>\n\n"
+        "سرویس‌های خریداری‌شده شما در این بخش نمایش داده می‌شوند.",
+        parse_mode="HTML",
+    )
+
     for cfg in configs:
+
         panel = settings.PANELS.get(cfg.panel_key)
 
         panel_name = (
@@ -270,45 +103,27 @@ async def my_configs(
             else cfg.panel_key
         )
 
-        used = "0"
-        total = str(cfg.traffic_gb)
-
-        try:
-            data = await refresh_config_from_panel(cfg)
-
-            used = format_gb(data["used_gb"])
-            total = format_gb(data["total_gb"])
-
-            # اگر لینک تغییر کرده، دیتابیس هم آپدیت شود
-            if data["link"] != cfg.config_link:
-                await update_vpn_config_link(
-                    session,
-                    cfg,
-                    data["link"],
-                )
-
-        except Exception:
-            pass
-
-        text = texts.MY_CONFIGS_ITEM.format(
-            panel_name=panel_name,
-            config_id=cfg.id,
-            used=used,
-            traffic=total,
-            expire_date=cfg.expire_at.strftime("%Y/%m/%d"),
-            status=config_status(cfg),
-            link=cfg.config_link,
+        text = build_config_text(
+            cfg,
+            panel_name,
         )
 
         await message.answer(
             text,
             parse_mode="HTML",
-            reply_markup=config_kb(cfg.id),
+            reply_markup=config_keyboard(cfg.id),
         )
 
-    await message.answer(
-        "برای دریافت لینک، QR یا بروزرسانی هر سرویس از دکمه‌های زیر آن استفاده کن.",
-        reply_markup=configs_global_kb(),
+
+@router.message(F.text == "📂 کانفیگ‌های من")
+async def my_configs(
+    message: Message,
+    session: AsyncSession,
+) -> None:
+
+    await show_configs(
+        message,
+        session,
     )
 
 
@@ -318,121 +133,54 @@ async def config_link(
     session: AsyncSession,
 ) -> None:
 
-    config_id = int(callback.data.split(":")[1])
+    from sqlalchemy import select
+    from app.database.models import VpnConfig
 
-    user = await get_or_create_user(
-        session,
-        telegram_id=callback.from_user.id,
-        username=callback.from_user.username,
-        full_name=callback.from_user.full_name,
+    config_id = int(
+        callback.data.split(":", 1)[1]
     )
 
-    cfg = await get_user_config(
-        session,
-        config_id,
-        user.id,
+    result = await session.execute(
+        select(VpnConfig).where(
+            VpnConfig.id == config_id,
+            VpnConfig.user_id.isnot(None),
+        )
     )
 
-    if not cfg:
+    config = result.scalar_one_or_none()
+
+    if config is None:
         await callback.answer(
-            "این کانفیگ پیدا نشد.",
+            "❌ کانفیگ پیدا نشد.",
             show_alert=True,
         )
         return
 
-    try:
-        data = await refresh_config_from_panel(cfg)
+    panel = settings.PANELS.get(config.panel_key)
 
-        await update_vpn_config_link(
-            session,
-            cfg,
-            data["link"],
-        )
-
-        await callback.message.answer(
-            texts.CONFIG_LINK_TEXT.format(
-                link=data["link"],
-            ),
-            parse_mode="HTML",
-        )
-
-        await callback.answer("لینک دریافت شد ✅")
-
-    except Exception as exc:
-        print(
-            f"[CONFIG LINK ERROR] {exc}"
-        )
-
-        await callback.answer(
-            "دریافت لینک انجام نشد.",
-            show_alert=True,
-        )
-
-
-@router.callback_query(F.data.startswith("config_qr:"))
-async def config_qr(
-    callback: CallbackQuery,
-    session: AsyncSession,
-) -> None:
-
-    config_id = int(callback.data.split(":")[1])
-
-    user = await get_or_create_user(
-        session,
-        telegram_id=callback.from_user.id,
-        username=callback.from_user.username,
-        full_name=callback.from_user.full_name,
+    panel_name = (
+        panel.name
+        if panel
+        else config.panel_key
     )
 
-    cfg = await get_user_config(
-        session,
-        config_id,
-        user.id,
+    status, _ = config_status(config.expire_at)
+
+    text = (
+        f"🔗 <b>لینک اتصال سرویس #{config.id}</b>\n\n"
+        f"🌍 <b>لوکیشن:</b> {panel_name}\n"
+        f"📌 <b>وضعیت:</b> {status}\n\n"
+        f"<code>{config.config_link}</code>"
     )
 
-    if not cfg:
-        await callback.answer(
-            "این کانفیگ پیدا نشد.",
-            show_alert=True,
-        )
-        return
+    await callback.message.answer(
+        text,
+        parse_mode="HTML",
+    )
 
-    try:
-        data = await refresh_config_from_panel(cfg)
-
-        await update_vpn_config_link(
-            session,
-            cfg,
-            data["link"],
-        )
-
-        qr = generate_qr_bytes(
-            data["link"]
-        )
-
-        await callback.message.answer_photo(
-            photo=BufferedInputFile(
-                qr.read(),
-                filename=f"config_{cfg.id}.png",
-            ),
-            caption=(
-                f"📱 <b>QR Code سرویس #{cfg.id}</b>\n\n"
-                "با اسکن این QR می‌تونی کانفیگ رو به کلاینت VPN اضافه کنی."
-            ),
-            parse_mode="HTML",
-        )
-
-        await callback.answer("QR آماده شد ✅")
-
-    except Exception as exc:
-        print(
-            f"[CONFIG QR ERROR] {exc}"
-        )
-
-        await callback.answer(
-            "ساخت QR انجام نشد.",
-            show_alert=True,
-        )
+    await callback.answer(
+        "✅ لینک ارسال شد.",
+    )
 
 
 @router.callback_query(F.data.startswith("config_refresh:"))
@@ -441,145 +189,60 @@ async def config_refresh(
     session: AsyncSession,
 ) -> None:
 
+    from sqlalchemy import select
+    from app.database.models import VpnConfig
+
     config_id = int(
-        callback.data.split(":")[1]
+        callback.data.split(":", 1)[1]
     )
 
-    user = await get_or_create_user(
-        session,
-        telegram_id=callback.from_user.id,
-        username=callback.from_user.username,
-        full_name=callback.from_user.full_name,
+    result = await session.execute(
+        select(VpnConfig).where(
+            VpnConfig.id == config_id,
+        )
     )
 
-    cfg = await get_user_config(
-        session,
-        config_id,
-        user.id,
-    )
+    config = result.scalar_one_or_none()
 
-    if not cfg:
+    if config is None:
         await callback.answer(
-            "این کانفیگ پیدا نشد.",
+            "❌ کانفیگ پیدا نشد.",
             show_alert=True,
         )
         return
 
-    try:
-        data = await refresh_config_from_panel(
-            cfg
-        )
+    panel = settings.PANELS.get(config.panel_key)
 
-        await update_vpn_config_link(
-            session,
-            cfg,
-            data["link"],
-        )
-
-        panel = settings.PANELS.get(
-            cfg.panel_key
-        )
-
-        panel_name = (
-            panel.name
-            if panel
-            else cfg.panel_key
-        )
-
-        text = texts.MY_CONFIGS_ITEM.format(
-            panel_name=panel_name,
-            config_id=cfg.id,
-            used=format_gb(
-                data["used_gb"]
-            ),
-            traffic=format_gb(
-                data["total_gb"]
-            ),
-            expire_date=cfg.expire_at.strftime(
-                "%Y/%m/%d"
-            ),
-            status=config_status(cfg),
-            link=data["link"],
-        )
-
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=config_kb(cfg.id),
-        )
-
+    if panel is None:
         await callback.answer(
-            "کانفیگ بروزرسانی شد ✅"
-        )
-
-    except Exception as exc:
-        print(
-            f"[CONFIG REFRESH ERROR] {exc}"
-        )
-
-        await callback.answer(
-            "❌ بروزرسانی انجام نشد.",
-            show_alert=True,
-        )
-
-
-@router.callback_query(F.data == "configs_refresh_all")
-async def configs_refresh_all(
-    callback: CallbackQuery,
-    session: AsyncSession,
-) -> None:
-
-    user = await get_or_create_user(
-        session,
-        telegram_id=callback.from_user.id,
-        username=callback.from_user.username,
-        full_name=callback.from_user.full_name,
-    )
-
-    configs = await list_user_configs(
-        session,
-        user.id,
-    )
-
-    if not configs:
-        await callback.answer(
-            "کانفیگی نداری.",
+            "❌ پنل این سرویس پیدا نشد.",
             show_alert=True,
         )
         return
 
-    success = 0
+    # فعلاً اطلاعات ذخیره‌شده را دوباره نمایش می‌دهیم.
+    # در مرحله بعد می‌توانیم این قسمت را مستقیماً
+    # از API پنل بخوانیم و مصرف/انقضا را واقعی کنیم.
 
-    for cfg in configs:
-        try:
-            data = await refresh_config_from_panel(
-                cfg
-            )
+    status, _ = config_status(config.expire_at)
 
-            await update_vpn_config_link(
-                session,
-                cfg,
-                data["link"],
-            )
+    text = (
+        f"🔄 <b>اطلاعات سرویس بروزرسانی شد</b>\n\n"
+        f"📡 <b>سرویس #{config.id}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🌍 <b>لوکیشن:</b> {panel.name}\n"
+        f"📊 <b>حجم:</b> {config.traffic_gb} GB\n"
+        f"📅 <b>انقضا:</b> {format_expire_date(config.expire_at)}\n"
+        f"📌 <b>وضعیت:</b> {status}\n"
+        f"━━━━━━━━━━━━━━━━━━"
+    )
 
-            success += 1
-
-        except Exception as exc:
-            print(
-                f"[REFRESH ALL] config={cfg.id} error={exc}"
-            )
+    await callback.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=config_keyboard(config.id),
+    )
 
     await callback.answer(
-        f"✅ {success} کانفیگ بروزرسانی شد.",
-        show_alert=True,
+        "✅ اطلاعات بروزرسانی شد.",
     )
-
-    try:
-        await callback.message.edit_text(
-            "🔄 <b>کانفیگ‌ها بروزرسانی شدند.</b>\n\n"
-            "برای مشاهده اطلاعات جدید، دوباره «📂 کانفیگ‌های من» را بزن.",
-            parse_mode="HTML",
-            reply_markup=configs_global_kb(),
-        )
-    except Exception:
-        pass
