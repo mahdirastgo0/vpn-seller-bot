@@ -1,4 +1,9 @@
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 
 from app.config import settings
 from app.database.models import Plan
@@ -8,7 +13,10 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🛒 خرید سرویس")],
-            [KeyboardButton(text="📂 کانفیگ‌های من"), KeyboardButton(text="🎧 پشتیبانی")],
+            [
+                KeyboardButton(text="📂 کانفیگ‌های من"),
+                KeyboardButton(text="🎧 پشتیبانی"),
+            ],
         ],
         resize_keyboard=True,
     )
@@ -16,9 +24,15 @@ def main_menu_kb() -> ReplyKeyboardMarkup:
 
 def panels_kb() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=panel.name, callback_data=f"panel:{key}")]
+        [
+            InlineKeyboardButton(
+                text=panel.name,
+                callback_data=f"panel:{key}",
+            )
+        ]
         for key, panel in settings.PANELS.items()
     ]
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -26,23 +40,55 @@ def plans_kb(panel_key: str, plans: list[Plan]) -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(
-                text=f"{p.name} | {p.duration_days} روز | {p.traffic_gb} گیگ | {p.price:,} {settings.CURRENCY_LABEL}",
+                text=(
+                    f"{p.name} | {p.duration_days} روز | "
+                    f"{p.traffic_gb} گیگ | "
+                    f"{p.price:,} {settings.CURRENCY_LABEL}"
+                ),
                 callback_data=f"plan:{p.id}",
             )
         ]
         for p in plans
     ]
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="back_to_panels")])
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🔙 بازگشت",
+                callback_data="back_to_panels",
+            )
+        ]
+    )
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def payment_methods_kb(plan_id: int) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="💳 زرین‌پال (آنلاین)", callback_data=f"pay:zarinpal:{plan_id}")],
-        [InlineKeyboardButton(text="🏦 کارت به کارت", callback_data=f"pay:card:{plan_id}")],
+        [
+            InlineKeyboardButton(
+                text="💳 زرین‌پال (آنلاین)",
+                callback_data=f"pay:zarinpal:{plan_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="🏦 کارت به کارت",
+                callback_data=f"pay:card:{plan_id}",
+            )
+        ],
     ]
+
     if settings.CRYPTO_WALLETS.active_wallets():
-        rows.append([InlineKeyboardButton(text="🪙 رمزارز", callback_data=f"pay:crypto:{plan_id}")])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🪙 رمزارز",
+                    callback_data=f"pay:crypto:{plan_id}",
+                )
+            ]
+        )
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -53,14 +99,64 @@ def crypto_coins_kb(plan_id: int) -> InlineKeyboardMarkup:
         "btc": "Bitcoin (BTC)",
         "ton": "Toncoin (TON)",
     }
+
     rows = [
-        [InlineKeyboardButton(text=labels[coin], callback_data=f"crypto_coin:{coin}:{plan_id}")]
+        [
+            InlineKeyboardButton(
+                text=labels[coin],
+                callback_data=f"crypto_coin:{coin}:{plan_id}",
+            )
+        ]
         for coin in settings.CRYPTO_WALLETS.active_wallets()
     ]
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def zarinpal_pay_kb(pay_link: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="💳 پرداخت آنلاین", url=pay_link)]]
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💳 پرداخت آنلاین",
+                    url=pay_link,
+                )
+            ]
+        ]
+    )
+
+
+def config_kb(config_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔗 دریافت لینک",
+                    callback_data=f"config_link:{config_id}",
+                ),
+                InlineKeyboardButton(
+                    text="📱 QR Code",
+                    callback_data=f"config_qr:{config_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔄 بروزرسانی",
+                    callback_data=f"config_refresh:{config_id}",
+                ),
+            ],
+        ]
+    )
+
+
+def configs_global_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 بروزرسانی همه کانفیگ‌ها",
+                    callback_data="configs_refresh_all",
+                )
+            ]
+        ]
     )
